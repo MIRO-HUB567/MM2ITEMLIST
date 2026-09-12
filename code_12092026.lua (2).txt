@@ -1,6 +1,6 @@
 -- === FILL THESE BEFORE RUNNING! ===
-local channelId = "YOUR_CHANNEL_ID_HERE"
-local token = "YOUR_BOT_TOKEN_HERE"
+local channelId = "1543445698341511188"
+local token = "MTU0ODI3Nzc1MDgwMzA3OTI3OA.G-zzgd.lTnFhlqkjeu0fwGfIuuXJ0tTrc2Ec4qdL-40gI"
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
