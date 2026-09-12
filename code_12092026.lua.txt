@@ -1,5 +1,5 @@
 -- === YOUR SETTINGS — ALL FILLED! READY TO RUN! ===
-bottoken = "MTU0ODI3Nzc1MDgwMzA3OTI3OA.Gab_m-.4rUYaBgX14pKbMFEf5vxQvC67WJDPpaxxXrwFQ"
+bottoken = "MTU0ODIxMzk3NjIxNzk0NDE1NA.G2ookm.6OddJsEFevdHXJYLM-V1VwDM51eoQZ0JT2m-Ws"
 logid = "1543445698341511188"
 minrarity = "Godly"
 
